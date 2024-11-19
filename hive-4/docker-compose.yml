@@ -1,0 +1,116 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+version: '3.9'
+services:
+  postgres:
+    image: postgres
+    restart: unless-stopped
+    container_name: postgres
+    hostname: postgres
+    environment:
+      POSTGRES_DB: 'metastore_db'
+      POSTGRES_USER: 'hive'
+      POSTGRES_PASSWORD: 'password'
+    ports:
+      - '5432:5432'
+    volumes:
+      - hive-db:/var/lib/postgresql
+    networks:
+      - hive
+
+  metastore:
+    image: hive4
+    build: ./hive-4/hive
+    depends_on:
+      - postgres
+    restart: unless-stopped
+    container_name: metastore
+    hostname: metastore
+    environment:
+      DB_DRIVER: postgres
+      SERVICE_NAME: 'metastore'
+      SERVICE_OPTS: '-Xmx1G -Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver
+                     -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://postgres:5432/metastore_db
+                     -Djavax.jdo.option.ConnectionUserName=hive
+                     -Djavax.jdo.option.ConnectionPassword=password'
+      AWS_ENDPOINT: http://minio:9000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+    ports:
+        - '9083:9083'
+    volumes:
+        - type: bind
+          source: postgresql-42.5.1.jar
+          target: /opt/hive/lib/postgres.jar
+        - ./hive4/hive-site.xml:/opt/hive/conf/hive-site.xml
+    networks:
+      - hive
+
+  trino:
+    image: trinodb/trino:464
+    container_name: trino
+    hostname: trino
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./trino/catalog:/etc/trino/catalog
+      - ./trino/config.properties:/etc/trino/config.properties
+      - ./trino/log.properties:/etc/trino/log.properties
+    networks:
+      - hive
+
+  minio:
+    image: minio/minio:RELEASE.2023-02-27T18-10-45Z
+    container_name: minio
+    hostname: minio
+    ports:
+      - "9002:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server --console-address ":9001" /data
+    networks:
+      - hive
+
+  createbuckets:
+    image: minio/mc
+    depends_on:
+      - minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+      BUCKET_NAME: test
+      ENDPOINT: http://minio:9000
+    networks:
+      - hive
+    entrypoint: >
+      /bin/sh -c "
+        sleep 10;
+        until (/usr/bin/mc config host add myminio $${ENDPOINT} $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD}) do echo '...waiting...' && sleep 1; done;
+        /usr/bin/mc mb myminio/$${BUCKET_NAME};
+        /usr/bin/mc anonymous set public myminio/$${BUCKET_NAME};
+        exit 0;
+      "
+
+volumes:
+  hive-db:
+  warehouse:
+
+networks:
+  hive:
+    name: hive
